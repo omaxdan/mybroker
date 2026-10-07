@@ -431,6 +431,105 @@ Application API contract so that addition never forces a rewrite.**
 
 ---
 
+## Production domain & environments
+
+> Added 2026-10-07 after it was confirmed the project owns a **live production domain**.
+> Full operational detail — DNS records, SSL, cutover runbook, hardening — is in
+> `docs/DEPLOYMENT.md`. This section fixes the architectural decisions.
+
+### Current state of `www.mybroker.ug` (as inspected)
+
+| Property | Finding | How established |
+|---|---|---|
+| DNS | `www.mybroker.ug` and apex `mybroker.ug` both resolve to `198.54.121.233` | DNS lookup from this environment |
+| Hosting | **Namecheap shared hosting, cPanel ("Premium" plan)** | Reverse DNS → `premium68-3.web-hosting.com` |
+| Deployed content | **"Coming soon" placeholder page only** — no real site | Confirmed by the project owner |
+| Technology | Placeholder on cPanel/Apache; **no production stack committed yet** | Owner + hosting signal |
+| SEO footprint | **None** — `site:mybroker.ug` returns zero indexed pages | Web search |
+| Existing URLs to preserve | **None** | Placeholder only |
+| robots.txt / sitemap.xml | Not independently verifiable from this container (egress policy blocks the host); irrelevant given a placeholder-only site | — |
+| Analytics / forms / integrations | None of consequence (placeholder) | Owner |
+| `cms.` / `staging.` subdomains | **Do not exist yet** | DNS lookup |
+
+**Conclusion:** the domain is live but carries only a coming-soon placeholder with **no
+content, no indexed URLs, and no SEO footprint**. There are therefore **no legacy-URL or
+SEO-preservation constraints** — Phase 1 may adopt the clean URL structure in
+`docs/PHASE-1-DOMAIN-MODEL.md` §12 freely. Cutover risk is low (nothing of value to
+break), but the placeholder must stay serving until the new frontend is cut over.
+
+> *Environment note:* this build container's egress policy blocks `mybroker.ug`, so
+> on-page content/SSL/robots could not be fetched here. That is a limitation of the
+> sandbox, not of the site, and does not affect any decision below.
+
+### Domain & environment map (decided)
+
+```
+Production   www.mybroker.ug         → Next.js public platform (canonical)
+             mybroker.ug (apex)      → 301 → www.mybroker.ug
+             cms.mybroker.ug         → WordPress admin + WP REST (headless origin, locked down)
+             (api is NOT a separate host in Phase 1 — /api/v1/* is served by the Next.js app)
+
+Staging      staging.mybroker.ug     → Next.js (staging) — HTTP Basic auth + noindex
+             cms-staging.mybroker.ug → WordPress (staging) — Basic auth + noindex
+
+Local        localhost:3000          → Next.js dev
+             localhost:8080 (or Local/DDEV) → WordPress dev
+```
+
+- **Canonical domain: `www.mybroker.ug`.** Apex 301-redirects to `www`. `www` is chosen
+  as canonical because the platform has sibling subdomains (`cms.`, `staging.`): a
+  canonical `www` keeps cookies scoped away from the apex so they cannot leak into
+  `cms.`/`staging.`, and it routes cleanly through a CDN via CNAME. Pick one canonical
+  and enforce it everywhere (redirects, sitemap, `rel=canonical`).
+- **WordPress is NOT the public website.** The public user interacts only with
+  `www.mybroker.ug` (the Next.js app). WordPress lives at `cms.mybroker.ug` as a
+  **headless content origin + admin**, reached server-side by the app and by staff for
+  administration — never browsed directly by the public (brief §26, §27; §13 of the
+  domain model applies at the hostname level too).
+
+### Recommended production topology
+
+```
+                         www.mybroker.ug  (canonical, HTTPS)
+                                 │   apex 301 → www
+                                 ▼
+                        ┌───────────────────┐
+                        │   Next.js (SSR)   │   hosted on a Node/edge platform
+                        │  public frontend  │   (Vercel/Netlify or Node host) —
+                        └─────────┬─────────┘   NOT on the shared cPanel box
+                                  │  /api/v1/*  (served by the Next.js app, server-side)
+                       ┌──────────┴───────────┐
+                       ▼                       ▼
+            cms.mybroker.ug            PostgreSQL (Phase 2 only)
+          WordPress content/CMS        operational system of record
+          (Namecheap cPanel, headless, managed Postgres/PostGIS)
+           locked down, server-side)
+```
+
+- The public frontend is **not** served from the shared cPanel host; shared hosting is
+  fine as the WordPress **origin**, not for the high-traffic SSR app.
+- Reusing the already-paid Namecheap cPanel hosting for WordPress at `cms.` keeps us
+  asset-light (§2): no new CMS hosting cost in Phase 1.
+- `/api/v1/*` is part of the Next.js app in Phase 1 (no separate `api.` host); it can be
+  extracted to `api.mybroker.ug` later without changing the public contract.
+
+### Staging is mandatory; never develop on production
+
+Changes flow **LOCAL → STAGING → TEST/APPROVAL → PRODUCTION** (see `docs/DEPLOYMENT.md`).
+The live domain is never a development or test target. Staging hosts are
+`noindex` + Basic-auth so they never compete in search or leak pre-release content.
+
+### DNS / SSL (intended — no changes made)
+
+HTTPS everywhere; `www` canonical with apex redirect; `cms.` and `staging.` added as new
+records (with approval); SSL via the frontend platform's managed TLS and cPanel AutoSSL
+(Let's Encrypt) for `cms.`; CDN and email (MX/SPF/DKIM/DMARC) are future records the
+design accommodates but which we do **not** create now. Exact records and the safe
+cutover order are in `docs/DEPLOYMENT.md`. **No DNS change is made without explicit
+approval, and the coming-soon placeholder keeps serving `www` until cutover.**
+
+---
+
 ## Final recommendation
 
 **Adopt Option B.** Build Phase 1 on headless WordPress + Next.js with no operational
